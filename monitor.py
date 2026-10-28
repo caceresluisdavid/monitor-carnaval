@@ -47,7 +47,8 @@ PRECIOS_SECTORES = {
     "sillas a": 15000, "sillas b fila 1": 24000, "sillas b fila 2": 19000,
     "sillas c fila 1": 19000, "sillas c fila 2": 15000, "sillas d fila 1": 25000,
     "sillas d fila 2": 20000, "sillas vip": 32000, "camarote a": 400000,
-    "camarote b": 420000, "camarote c": 420000, "palco vip 1": 450000, "palco vip 2": 450000
+    "camarote b": 420000, "camarote c": 420000, "palco vip 1": 450000, "palco vip 2": 450000, "seguro espectador menores": 4000,
+    "estacionamiento": 5000
 }
 
 def conectar_sheets():
