@@ -1,24 +1,23 @@
 import os
 import json
+import re
 import requests
 import pandas as pd
 import streamlit as st
 
 st.set_page_config(
-    page_title="Detalle Individual de Asientos - Carnaval",
+    page_title="Auditoría de Asientos y Módulos",
     page_icon="🎟️",
     layout="wide"
 )
 
-# Estilos acordes al monitor de ventas
+# Estilos personalizados
 st.markdown("""
 <style>
     .stApp { background-color: #160a2c; color: #f8f9fa; }
     div[data-testid="stMetric"] { background-color: #241147; border: 1px solid #4a2182; border-radius: 10px; padding: 12px; }
     h1, h2, h3 { color: #ffb703; font-weight: 700; }
-    .stSelectbox label, .stTextInput label { color: #ffb703 !important; font-weight: bold; }
-    .status-sold { color: #ff4d4d; font-weight: bold; }
-    .status-partial { color: #ffb703; font-weight: bold; }
+    .stSelectbox label, .stTextInput label, .stRadio label { color: #ffb703 !important; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -36,7 +35,6 @@ HEADERS = {
 }
 
 PRECIOS_SECTORES = {
-    "tribuna 1": 6000, "tribuna 2": 12000, "tribuna 3": 12000, "tribuna 4": 6000,
     "sillas a": 15000, "sillas b fila 1": 24000, "sillas b fila 2": 19000,
     "sillas c fila 1": 19000, "sillas c fila 2": 15000, "sillas d fila 1": 25000,
     "sillas d fila 2": 20000, "sillas vip": 32000, "camarote a": 400000,
@@ -46,105 +44,133 @@ PRECIOS_SECTORES = {
 def normalizar_texto(t):
     if not isinstance(t, str): return ""
     t = t.lower().strip()
-    for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"), ("(", ""), (")", "")):
+    for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
         t = t.replace(a, b)
     return " ".join(t.split())
 
-def asignar_precio(nombre):
-    norm = normalizar_texto(nombre)
+def asignar_precio(sector_nombre):
+    norm = normalizar_texto(sector_nombre)
     for c, p in PRECIOS_SECTORES.items():
         if c in norm or norm in c: return p
     return 0
 
+def deducir_sector(codigo):
+    c = str(codigo).upper()
+    if c.startswith("SA-"): return "Sillas A"
+    if c.startswith("PV1-"): return "Palco Vip 1"
+    if c.startswith("PV2-") or c.startswith("PV-"): return "Palco Vip 2"
+    if c.startswith("CA-"): return "Camarote A"
+    if c.startswith("CB-"): return "Camarote B"
+    if c.startswith("CC-"): return "Camarote C"
+    if c.startswith("SV-"): return "Sillas Vip"
+    if c.startswith("SBF1-"): return "Sillas B fila 1"
+    if c.startswith("SBF2-"): return "Sillas B fila 2"
+    if c.startswith("SCF1-"): return "Sillas C fila 1"
+    if c.startswith("SCF2-"): return "Sillas C fila 2"
+    if c.startswith("SDF1-"): return "Sillas D fila 1"
+    if c.startswith("SDF2-"): return "Sillas D fila 2"
+    if "TRIBUNA" in c: return "Tribunas"
+    return "Otros"
+
 @st.cache_data
-def cargar_mapa():
+def cargar_asientos_totales():
     ruta = "mapa_asientos.json"
     if os.path.exists(ruta):
         with open(ruta, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # Diccionario indexado por order numérico
-        return {item["order"]: item["codigo"] for item in data}
-    return {}
+        df_base = pd.DataFrame(data)
+        # Excluimos las tribunas generales del mapa individual de butacas numeradas
+        df_base = df_base[~df_base["codigo"].str.contains("Tribuna", case=False, na=False)].copy()
+        df_base["Sector"] = df_base["codigo"].apply(deducir_sector)
+        df_base["Precio"] = df_base["Sector"].apply(asignar_precio)
+        return df_base
+    return pd.DataFrame()
 
-dicc_mapa = cargar_mapa()
+df_universo = cargar_asientos_totales()
 
-st.title("🎟️ Auditoría Individual de Asientos y Módulos")
+st.title("🎟️ Control Individual de Butacas y Módulos")
 
-c_noche, c_btn = st.columns([4, 1])
-with c_noche:
+c1, c2 = st.columns([4, 1])
+with c1:
     noche_sel = st.selectbox("Seleccionar Noche a auditar:", list(EVENTOS.keys()))
-with c_btn:
+with c2:
     st.write("")
     st.write("")
-    if st.button("🔄 Actualizar Datos"):
+    if st.button("🔄 Actualizar"):
         st.rerun()
 
 event_id = EVENTOS[noche_sel]
 url = f"https://api.almotick.com/api/v1/events/{event_id}/availability"
 
-try:
-    r = requests.get(url, headers=HEADERS, timeout=10)
-    if r.status_code == 200:
-        data = r.json()
-        seats_api = data.get("seats", [])
-        
-        if not dicc_mapa:
-            st.warning("⚠️ No se encontró el archivo 'mapa_asientos.json' en la carpeta. Se mostrarán solo los números de orden.")
-
-        if seats_api:
-            # Procesar registros individuales
-            registros = []
+if df_universo.empty:
+    st.error("⚠️ No se encontró el archivo 'mapa_asientos.json' en el repositorio.")
+else:
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            seats_api = data.get("seats", [])
+            
+            # Mapear los orders vendidos devueltos por la API
+            ordenes_ocupadas = {}
             for s in seats_api:
-                orden = s.get("order")
-                cod_asiento = dicc_mapa.get(orden, f"ID-{orden}")
-                sector = s.get("tier_name", "Sin Sector")
-                estado = s.get("status", "unknown").upper()
-                precio = asignar_precio(sector)
-                
-                registros.append({
-                    "Código Asiento / Módulo": cod_asiento,
-                    "Sector": sector,
-                    "Estado": estado,
-                    "Valor Estimado": precio,
-                    "Order API": orden
-                })
+                if s.get("status") == "sold":
+                    ordenes_ocupadas[s.get("order")] = "VENDIDO"
+                elif s.get("status") == "partial":
+                    ordenes_ocupadas[s.get("order")] = "PARCIAL"
+
+            # Copiar el mapa de los 1.245 asientos
+            df_actual = df_universo.copy()
+            df_actual["Estado"] = df_actual["order"].map(lambda o: ordenes_ocupadas.get(o, "LIBRE"))
             
-            df = pd.DataFrame(registros)
+            # Métricas
+            totales = len(df_actual)
+            vendidos = len(df_actual[df_actual["Estado"] == "VENDIDO"])
+            libres = len(df_actual[df_actual["Estado"] == "LIBRE"])
+            recaudado = df_actual[df_actual["Estado"] == "VENDIDO"]["Precio"].sum()
             
-            # Métricas superiores
-            total_vendidos = len(df[df["Estado"] == "SOLD"])
-            recaudado = df[df["Estado"] == "SOLD"]["Valor Estimado"].sum()
-            
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Asientos/Módulos Vendidos", total_vendidos)
-            m2.metric("Otras Reservas / Bloqueos", len(df) - total_vendidos)
-            m3.metric("Monto Registrado en Asientos", f"${recaudado:,.0f}".replace(",", "."))
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            col_m1.metric("Capacidad Numerada", f"{totales:,}".replace(",", "."))
+            col_m2.metric("Butacas/Módulos Libres", f"{libres:,}".replace(",", "."))
+            col_m3.metric("Butacas/Módulos Vendidos", f"{vendidos:,}".replace(",", "."))
+            col_m4.metric("Recaudación Butacas", f"${recaudado:,.0f}".replace(",", "."))
             
             st.markdown("---")
             
             # Filtros interactivos
-            f1, f2 = st.columns(2)
-            with f1:
-                sectores = ["Todos"] + sorted(list(df["Sector"].dropna().unique()))
-                filtro_sec = st.selectbox("Filtrar por sector:", sectores)
-            with f2:
-                busqueda = st.text_input("Buscar por código específico (ej: CA-004, PV1):", "").strip().upper()
+            f_sec, f_est, f_bus = st.columns([2, 1, 2])
+            with f_sec:
+                lista_sectores = ["Todos"] + sorted(list(df_actual["Sector"].unique()))
+                sec_elegido = st.selectbox("Filtrar por Sector:", lista_sectores)
+            with f_est:
+                filtro_estado = st.selectbox("Ver Estado:", ["Todos", "LIBRE", "VENDIDO"])
+            with f_bus:
+                busqueda = st.text_input("Buscar código puntual (ej: CA-004, PV1-011):", "").strip().upper()
             
-            df_filtrado = df.copy()
-            if filtro_sec != "Todos":
-                df_filtrado = df_filtrado[df_filtrado["Sector"] == filtro_sec]
+            # Aplicar filtros
+            df_vista = df_actual.copy()
+            if sec_elegido != "Todos":
+                df_vista = df_vista[df_vista["Sector"] == sec_elegido]
+            if filtro_estado != "Todos":
+                df_vista = df_vista[df_vista["Estado"] == filtro_estado]
             if busqueda:
-                df_filtrado = df_filtrado[df_filtrado["Código Asiento / Módulo"].str.contains(busqueda, na=False)]
+                df_vista = df_vista[df_vista["codigo"].str.contains(busqueda, na=False)]
                 
-            # Formato de visualización
-            df_mostrar = df_filtrado[["Código Asiento / Módulo", "Sector", "Estado", "Valor Estimado", "Order API"]].sort_values(by="Código Asiento / Módulo")
-            df_mostrar["Valor Estimado"] = df_mostrar["Valor Estimado"].apply(lambda v: f"${v:,.0f}".replace(",", "."))
+            # Tabla final limpia
+            df_vista = df_vista.rename(columns={
+                "codigo": "Código Butaca / Módulo",
+                "Precio": "Valor Unitario",
+                "order": "Order ID"
+            })
             
-            st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+            df_vista["Valor Unitario"] = df_vista["Valor Unitario"].apply(lambda p: f"${p:,.0f}".replace(",", "."))
             
+            st.dataframe(
+                df_vista[["Código Butaca / Módulo", "Sector", "Estado", "Valor Unitario", "Order ID"]],
+                use_container_width=True,
+                hide_index=True
+            )
         else:
-            st.info("No se registran butacas ocupadas en esta noche.")
-    else:
-        st.error(f"Error {r.status_code} al conectar con la ticketera Almotick.")
-except Exception as e:
-    st.error(f"Error en la consulta: {e}")
+            st.error(f"Error {r.status_code} al consultar la ticketera.")
+    except Exception as e:
+        st.error(f"Error: {e}")
