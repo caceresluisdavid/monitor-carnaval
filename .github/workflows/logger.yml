@@ -1,0 +1,27 @@
+name: Guardar Log Horario
+
+on:
+  schedule:
+    # Se ejecuta cada hora en punto (minuto 0)
+    - cron: '0 * * * *'
+  workflow_dispatch: # Permite probarlo manualmente cuando quieras
+
+jobs:
+  registrar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: pip install requests pandas gspread oauth2client
+
+      - name: Ejecutar recolector
+        env:
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: python recorder.py
