@@ -6,6 +6,7 @@ from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+# Pegá acá los 4 links o IDs
 EVENTOS = {
     "Noche 1 (16 Ene)": "6ac83585c0d0aed59622065f",
     "Noche 2 (23 Ene)": "6adb517733c61ad3ee565aba",
@@ -41,10 +42,8 @@ def asignar_precio(nombre):
     return 0
 
 def ejecutar_registro():
-    # Conexión con Google Sheets mediante la credencial del entorno
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT")
     if not creds_json:
-        print("No se encontró la variable de entorno GCP_SERVICE_ACCOUNT")
         return
 
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -53,14 +52,17 @@ def ejecutar_registro():
     client = gspread.authorize(creds)
     sheet = client.open("Logs_Ventas_Carnaval").sheet1
 
-    ahora = datetime.now()
-    filas_nuevas = []
+    ahora_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    filas_a_insertar = []
 
+    # Recorrer las 4 noches y armar el lote completo
     for noche, event_id in EVENTOS.items():
-        if not event_id:
+        if not event_id or "PEGAR" in event_id:
             continue
+        
         clean_id = event_id.rstrip("/").split("/")[-1] if "/" in event_id else event_id.strip()
         url = f"https://api.almotick.com/api/v1/events/{clean_id}/availability"
+        
         try:
             r = requests.get(url, headers=HEADERS, timeout=10)
             if r.status_code == 200:
@@ -76,16 +78,17 @@ def ejecutar_registro():
                     rec = float(df["recaudado"].sum())
                     pct = round((vendidas / cupos) * 100, 2) if cupos > 0 else 0
 
-                    filas_nuevas.append([
-                        ahora.strftime("%Y-%m-%d %H:%M:%S"),
+                    filas_a_insertar.append([
+                        ahora_str,
                         noche, cupos, vendidas, disp, rec, pct
                     ])
         except Exception as e:
-            print(f"Error procesando {noche}: {e}")
+            print(f"Error en {noche}: {e}")
 
-    if filas_nuevas:
-        sheet.append_rows(filas_nuevas)
-        print(f"Se registraron {len(filas_nuevas)} filas correctamente.")
+    # Escribe todas las noches juntas en una sola llamada a Google Sheets
+    if filas_a_insertar:
+        sheet.append_rows(filas_a_insertar)
+        print(f"Lote insertado con {len(filas_a_insertar)} filas.")
 
 if __name__ == "__main__":
     ejecutar_registro()
