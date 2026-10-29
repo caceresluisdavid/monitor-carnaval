@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+# Horario oficial Argentina (GMT-3)
 TZ_ARG = timezone(timedelta(hours=-3))
 
 EVENTOS = {
@@ -43,8 +44,11 @@ PRECIOS_SECTORES = {
     "estacionamiento": 5000
 }
 
+TRIBUNAS_ORDERS = {255, 256, 257, 258}
+
 def normalizar_texto(t):
-    if not isinstance(t, str): return ""
+    if not isinstance(t, str): 
+        return ""
     t = t.lower().strip()
     for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
         t = t.replace(a, b)
@@ -132,9 +136,14 @@ def ejecutar_registro():
                 recaudado_noche = 0.0
 
                 for s in seats_api:
+                    order_val = s.get("order")
+                    # No registrar tribunas como butacas numeradas individuales
+                    if order_val in TRIBUNAS_ORDERS:
+                        continue
+                        
                     if s.get("status") == "sold":
-                        order_id = str(s.get("order"))
-                        cod = dicc_mapa.get(s.get("order"), f"ID-{order_id}")
+                        order_id = str(order_val)
+                        cod = dicc_mapa.get(order_val, f"ID-{order_id}")
                         sec = deducir_sector(cod)
                         precio = asignar_precio(sec)
 
@@ -164,6 +173,8 @@ def ejecutar_registro():
     if filas_nuevas_butacas:
         sheet_butacas.append_rows(filas_nuevas_butacas)
         print(f"Nuevas butacas registradas: {len(filas_nuevas_butacas)} filas.")
+    else:
+        print("No hubo butacas nuevas vendidas en esta pasada.")
 
 if __name__ == "__main__":
     ejecutar_registro()
