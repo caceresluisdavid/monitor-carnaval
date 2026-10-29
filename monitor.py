@@ -85,9 +85,49 @@ def obtener_datos(event_input):
             if lots:
                 df = pd.DataFrame(lots)
                 
-                # Comprobar claves que la API no envía cuando el evento está en cero ventas
+                # Comprobar columnas faltantes si el evento aún no tiene ventas
                 if "cupos" not in df.columns:
                     df["cupos"] = 0
                 if "entradas_vendidas" not in df.columns:
                     df["entradas_vendidas"] = 0
-                if "cupos_disponibles" not in df
+                if "cupos_disponibles" not in df.columns:
+                    df["cupos_disponibles"] = df["cupos"] - df["entradas_vendidas"]
+
+                # Limpieza de nulos y casteo numérico
+                df["cupos"] = df["cupos"].fillna(0).astype(int)
+                df["entradas_vendidas"] = df["entradas_vendidas"].fillna(0).astype(int)
+                df["cupos_disponibles"] = df["cupos_disponibles"].fillna(df["cupos"]).astype(int)
+
+                df["precio_unitario"] = df["nombre"].apply(asignar_precio)
+                df["recaudado"] = df["entradas_vendidas"] * df["precio_unitario"]
+                return df
+    except Exception as e:
+        st.sidebar.error(f"Error consultando {clean_id}: {e}")
+    return None
+
+# Panel Lateral de Control
+st.sidebar.title("⚙️ CONTROL")
+if st.sidebar.button("🔄 ACTUALIZAR AHORA"):
+    st.rerun()
+
+st.title("🎭 CARNAVAL PASO DE LOS LIBRES")
+st.subheader("Centro de Monitoreo de Ventas y Recaudación")
+
+datos_noches = {}
+for nombre, ev_id in EVENTOS.items():
+    df_noche = obtener_datos(ev_id)
+    if df_noche is not None and not df_noche.empty:
+        datos_noches[nombre] = df_noche
+
+pestañas = st.tabs(["🌐 Total Consolidado (4 Noches)"] + list(EVENTOS.keys()))
+
+# Pestaña 1: Consolidado Global
+with pestañas[0]:
+    if datos_noches:
+        total_cupos = sum(df["cupos"].sum() for df in datos_noches.values())
+        total_vendidas = sum(df["entradas_vendidas"].sum() for df in datos_noches.values())
+        total_disponibles = sum(df["cupos_disponibles"].sum() for df in datos_noches.values())
+        total_recaudado = sum(df["recaudado"].sum() for df in datos_noches.values())
+        pct_global = round((total_vendidas / total_cupos) * 100, 2) if total_cupos > 0 else 0
+
+        m1, m2, m3
