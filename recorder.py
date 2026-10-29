@@ -23,16 +23,30 @@ HEADERS = {
 }
 
 PRECIOS_SECTORES = {
-    "tribuna 1": 6000, "tribuna 2": 12000, "tribuna 3": 12000, "tribuna 4": 6000,
-    "sillas a": 15000, "sillas b fila 1": 24000, "sillas b fila 2": 19000,
-    "sillas c fila 1": 19000, "sillas c fila 2": 15000, "sillas d fila 1": 25000,
-    "sillas d fila 2": 20000, "sillas vip": 32000, "camarote a": 400000,
-    "camarote b": 420000, "camarote c": 420000, "palco vip 1": 450000, "palco vip 2": 450000,
-    "seguro espectador menores": 4000, "estacionamiento": 5000
+    "tribuna 1": 6000, 
+    "tribuna 2": 12000, 
+    "tribuna 3": 12000, 
+    "tribuna 4": 6000,
+    "sillas a": 15000, 
+    "sillas b fila 1": 24000, 
+    "sillas b fila 2": 19000,
+    "sillas c fila 1": 19000, 
+    "sillas c fila 2": 15000, 
+    "sillas d fila 1": 25000, 
+    "sillas d fila 2": 20000, 
+    "sillas vip": 32000, 
+    "camarote a": 400000,
+    "camarote b": 420000, 
+    "camarote c": 420000, 
+    "palco vip 1": 450000, 
+    "palco vip 2": 450000,
+    "seguro espectador menores": 4000,
+    "estacionamiento": 5000
 }
 
 def normalizar_texto(t):
-    if not isinstance(t, str): return ""
+    if not isinstance(t, str): 
+        return ""
     t = t.lower().strip()
     for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
         t = t.replace(a, b)
@@ -41,7 +55,8 @@ def normalizar_texto(t):
 def asignar_precio(nombre):
     norm = normalizar_texto(nombre)
     for c, p in PRECIOS_SECTORES.items():
-        if c in norm or norm in c: return p
+        if c in norm or norm in c: 
+            return p
     return 0
 
 def deducir_sector(codigo):
@@ -82,20 +97,19 @@ def ejecutar_registro():
     libro = client.open("Logs_Ventas_Carnaval")
     sheet_totales = libro.sheet1
     
-    # Obtener o crear pestaña Log_Butacas
+    # Comprobar o crear pestaña Log_Butacas
     try:
         sheet_butacas = libro.worksheet("Log_Butacas")
     except:
         sheet_butacas = libro.add_worksheet(title="Log_Butacas", rows=1000, cols=10)
         sheet_butacas.append_row(["fecha_hora_gmt3", "noche", "codigo_butaca", "sector", "precio", "order_id"])
 
-    # Leer ventas ya registradas para no duplicar
+    # Leer butacas ya registradas
     registros_previos = sheet_butacas.get_all_values()
     claves_ya_registradas = set()
     if len(registros_previos) > 1:
         for fila in registros_previos[1:]:
             if len(fila) >= 6:
-                # Clave única: (noche, order_id)
                 claves_ya_registradas.add((fila[1], str(fila[5])))
 
     dicc_mapa = cargar_diccionario_asientos()
@@ -115,9 +129,20 @@ def ejecutar_registro():
             if r.status_code == 200:
                 data = r.json()
                 
-                # 1. Procesar totales generales por sector
+                # 1. Totales generales por sector
                 df_lots = pd.DataFrame(data.get("lots", []))
                 if not df_lots.empty:
+                    if "cupos" not in df_lots.columns:
+                        df_lots["cupos"] = 0
+                    if "entradas_vendidas" not in df_lots.columns:
+                        df_lots["entradas_vendidas"] = 0
+                    if "cupos_disponibles" not in df_lots.columns:
+                        df_lots["cupos_disponibles"] = df_lots["cupos"] - df_lots["entradas_vendidas"]
+
+                    df_lots["cupos"] = df_lots["cupos"].fillna(0).astype(int)
+                    df_lots["entradas_vendidas"] = df_lots["entradas_vendidas"].fillna(0).astype(int)
+                    df_lots["cupos_disponibles"] = df_lots["cupos_disponibles"].fillna(df_lots["cupos"]).astype(int)
+
                     df_lots["precio_unitario"] = df_lots["nombre"].apply(asignar_precio)
                     df_lots["recaudado"] = df_lots["entradas_vendidas"] * df_lots["precio_unitario"]
 
@@ -131,7 +156,7 @@ def ejecutar_registro():
                         ahora_gmt3, noche, cupos, vendidas, disp, rec, pct
                     ])
 
-                # 2. Procesar detalle de butacas vendidas
+                # 2. Detalle de butacas vendidas
                 seats_api = data.get("seats", [])
                 for s in seats_api:
                     if s.get("status") == "sold":
