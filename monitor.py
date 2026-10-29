@@ -85,7 +85,7 @@ def obtener_datos(event_input):
             if lots:
                 df = pd.DataFrame(lots)
                 
-                # Comprobar columnas faltantes si el evento aún no tiene ventas
+                # Columnas aseguradas contra eventos recién creados sin ventas
                 if "cupos" not in df.columns:
                     df["cupos"] = 0
                 if "entradas_vendidas" not in df.columns:
@@ -93,7 +93,6 @@ def obtener_datos(event_input):
                 if "cupos_disponibles" not in df.columns:
                     df["cupos_disponibles"] = df["cupos"] - df["entradas_vendidas"]
 
-                # Limpieza de nulos y casteo numérico
                 df["cupos"] = df["cupos"].fillna(0).astype(int)
                 df["entradas_vendidas"] = df["entradas_vendidas"].fillna(0).astype(int)
                 df["cupos_disponibles"] = df["cupos_disponibles"].fillna(df["cupos"]).astype(int)
@@ -105,7 +104,7 @@ def obtener_datos(event_input):
         st.sidebar.error(f"Error consultando {clean_id}: {e}")
     return None
 
-# Panel Lateral de Control
+# Control lateral
 st.sidebar.title("⚙️ CONTROL")
 if st.sidebar.button("🔄 ACTUALIZAR AHORA"):
     st.rerun()
@@ -130,4 +129,59 @@ with pestañas[0]:
         total_recaudado = sum(df["recaudado"].sum() for df in datos_noches.values())
         pct_global = round((total_vendidas / total_cupos) * 100, 2) if total_cupos > 0 else 0
 
-        m1, m2, m3
+        c_col1, c_col2, c_col3, c_col4 = st.columns(4)
+        c_col1.metric("Cupos Totales (4 Noches)", f"{total_cupos:,}".replace(",", "."))
+        c_col2.metric("Entradas Vendidas", f"{total_vendidas:,}".replace(",", "."), f"{pct_global}%")
+        c_col3.metric("Entradas Disponibles", f"{total_disponibles:,}".replace(",", "."))
+        c_col4.metric("Recaudación Total Estimada", f"${total_recaudado:,.0f}".replace(",", "."))
+
+        st.markdown("---")
+        st.subheader("📊 Resumen General por Noche")
+        
+        filas_resumen = []
+        for n, df in datos_noches.items():
+            cup = int(df["cupos"].sum())
+            ven = int(df["entradas_vendidas"].sum())
+            disp = int(df["cupos_disponibles"].sum())
+            rec = float(df["recaudado"].sum())
+            p = round((ven / cup) * 100, 2) if cup > 0 else 0
+            filas_resumen.append({
+                "Noche": n,
+                "Cupos": cup,
+                "Vendidas": ven,
+                "Disponibles": disp,
+                "Ocupación": f"{p}%",
+                "Recaudación": f"${rec:,.0f}".replace(",", ".")
+            })
+        st.dataframe(pd.DataFrame(filas_resumen), use_container_width=True, hide_index=True)
+    else:
+        st.info("Esperando respuesta de la ticketera. Si los links son muy recientes, se activarán en breve.")
+
+# Pestañas individuales para cada noche
+for i, (nombre, ev_id) in enumerate(EVENTOS.items(), start=1):
+    with pestañas[i]:
+        if nombre in datos_noches:
+            df = datos_noches[nombre]
+            c_cupos = int(df["cupos"].sum())
+            c_vendidas = int(df["entradas_vendidas"].sum())
+            c_disp = int(df["cupos_disponibles"].sum())
+            c_rec = float(df["recaudado"].sum())
+            c_pct = round((c_vendidas / c_cupos) * 100, 2) if c_cupos > 0 else 0
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Capacidad Total", f"{c_cupos:,}".replace(",", "."))
+            col1.metric("Entradas Disponibles", f"{c_disp:,}".replace(",", "."))
+            col2.metric("Entradas Vendidas", f"{c_vendidas:,}".replace(",", "."), f"{c_pct}%")
+            col4.metric("Recaudación Noche", f"${c_rec:,.0f}".replace(",", "."))
+
+            st.markdown("---")
+            st.subheader("Desglose por Sector")
+            
+            df_mostrar = df[["nombre", "cupos", "entradas_vendidas", "cupos_disponibles", "precio_unitario", "recaudado"]].copy()
+            df_mostrar.columns = ["Sector", "Capacidad", "Vendidas", "Disponibles", "Precio Unitario", "Recaudado"]
+            df_mostrar["Precio Unitario"] = df_mostrar["Precio Unitario"].apply(lambda p: f"${p:,.0f}".replace(",", "."))
+            df_mostrar["Recaudado"] = df_mostrar["Recaudado"].apply(lambda r: f"${r:,.0f}".replace(",", "."))
+            
+            st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+        else:
+            st.warning(f"No se recibieron datos para {nombre}.")
