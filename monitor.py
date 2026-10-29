@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 import pandas as pd
 import streamlit as st
@@ -57,8 +58,7 @@ PRECIOS_SECTORES = {
 }
 
 def normalizar_texto(t):
-    if not isinstance(t, str): 
-        return ""
+    if not isinstance(t, str): return ""
     t = t.lower().strip()
     for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
         t = t.replace(a, b)
@@ -71,7 +71,41 @@ def asignar_precio(nombre):
             return p
     return 0
 
-def obtener_datos(event_input):
+def deducir_sector(codigo):
+    c = str(codigo).upper()
+    if c.startswith("SA-"): return "Sillas A"
+    if c.startswith("PV1-"): return "Palco Vip 1"
+    if c.startswith("PV2-") or c.startswith("PV-"): return "Palco Vip 2"
+    if c.startswith("CA-"): return "Camarote A"
+    if c.startswith("CB-"): return "Camarote B"
+    if c.startswith("CC-"): return "Camarote C"
+    if c.startswith("SV-"): return "Sillas Vip"
+    if c.startswith("SBF1-"): return "Sillas B fila 1"
+    if c.startswith("SBF2-"): return "Sillas B fila 2"
+    if c.startswith("SCF1-"): return "Sillas C fila 1"
+    if c.startswith("SCF2-"): return "Sillas C fila 2"
+    if c.startswith("SDF1-"): return "Sillas D fila 1"
+    if c.startswith("SDF2-"): return "Sillas D fila 2"
+    if "TRIBUNA 1" in c: return "Tribuna 1"
+    if "TRIBUNA 2" in c: return "Tribuna 2"
+    if "TRIBUNA 3" in c: return "Tribuna 3"
+    if "TRIBUNA 4" in c: return "Tribuna 4"
+    return "Otros"
+
+@st.cache_data
+def cargar_universo_base():
+    ruta = "mapa_asientos.json"
+    if os.path.exists(ruta):
+        with open(ruta, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        df = pd.DataFrame(data)
+        df["sector"] = df["codigo"].apply(deducir_sector)
+        return df
+    return pd.DataFrame()
+
+df_base_asientos = cargar_universo_base()
+
+def procesar_noche(event_input):
     if not event_input:
         return None
     clean_id = event_input.rstrip("/").split("/")[-1] if "/" in event_input else event_input.strip()
@@ -82,29 +116,57 @@ def obtener_datos(event_input):
         if r.status_code == 200:
             data = r.json()
             lots = data.get("lots", [])
-            if lots:
-                df = pd.DataFrame(lots)
-                
-                # Columnas aseguradas contra eventos recién creados sin ventas
-                if "cupos" not in df.columns:
-                    df["cupos"] = 0
-                if "entradas_vendidas" not in df.columns:
-                    df["entradas_vendidas"] = 0
-                if "cupos_disponibles" not in df.columns:
-                    df["cupos_disponibles"] = df["cupos"] - df["entradas_vendidas"]
+            seats = data.get("seats", [])
+            
+            # Mapeo de ventas individuales desde seats
+            vendidos_set = set()
+            for s in seats:
+                if s.get("status") == "sold":
+                    vendidos_set.add(s.get("order"))
+            
+            # Calcular desglose por sector usando el mapa de asientos
+            filas_sector = []
+            if not df_base_asientos.empty:
+                for sector_nombre, grp in df_base_asientos.groupby("sector"):
+                    if "Tribuna" in sector_nombre:
+                        continue
+                    cupos = len(grp)
+                    orders_sector = set(grp["order"])
+                    vendidas = len(orders_sector.intersection(vendidos_set))
+                    disponibles = cupos - vendidas
+                    precio_unid = asignar_precio(sector_nombre)
+                    recaudado = vendidas * precio_unid
+                    
+                    filas_sector.append({
+                        "Sector": sector_nombre,
+                        "Capacidad": cupos,
+                        "Vendidas": vendidas,
+                        "Disponibles": disponibles,
+                        "Precio Unitario": precio_unid,
+                        "Recaudado": recaudado
+                    })
 
-                df["cupos"] = df["cupos"].fillna(0).astype(int)
-                df["entradas_vendidas"] = df["entradas_vendidas"].fillna(0).astype(int)
-                df["cupos_disponibles"] = df["cupos_disponibles"].fillna(df["cupos"]).astype(int)
+            # Añadir sectores generales que vengan en lots
+            nombres_ya = {f["Sector"] for f in filas_sector}
+            for l in lots:
+                nom = l.get("nombre", "")
+                if nom not in nombres_ya:
+                    filas_sector.append({
+                        "Sector": nom,
+                        "Capacidad": l.get("cupos", 0),
+                        "Vendidas": l.get("entradas_vendidas", 0),
+                        "Disponibles": l.get("cupos_disponibles", 0),
+                        "Precio Unitario": asignar_precio(nom),
+                        "Recaudado": l.get("entradas_vendidas", 0) * asignar_precio(nom)
+                    })
 
-                df["precio_unitario"] = df["nombre"].apply(asignar_precio)
-                df["recaudado"] = df["entradas_vendidas"] * df["precio_unitario"]
-                return df
+            df_res = pd.DataFrame(filas_sector)
+            return df_res
     except Exception as e:
         st.sidebar.error(f"Error consultando {clean_id}: {e}")
     return None
 
-# Control lateral
+# Panel Lateral de Control
 st.sidebar.title("⚙️ CONTROL")
 if st.sidebar.button("🔄 ACTUALIZAR AHORA"):
     st.rerun()
@@ -114,19 +176,18 @@ st.subheader("Centro de Monitoreo de Ventas y Recaudación")
 
 datos_noches = {}
 for nombre, ev_id in EVENTOS.items():
-    df_noche = obtener_datos(ev_id)
-    if df_noche is not None and not df_noche.empty:
-        datos_noches[nombre] = df_noche
+    df_n = procesar_noche(ev_id)
+    if df_n is not None and not df_n.empty:
+        datos_noches[nombre] = df_n
 
 pestañas = st.tabs(["🌐 Total Consolidado (4 Noches)"] + list(EVENTOS.keys()))
 
-# Pestaña 1: Consolidado Global
 with pestañas[0]:
     if datos_noches:
-        total_cupos = sum(df["cupos"].sum() for df in datos_noches.values())
-        total_vendidas = sum(df["entradas_vendidas"].sum() for df in datos_noches.values())
-        total_disponibles = sum(df["cupos_disponibles"].sum() for df in datos_noches.values())
-        total_recaudado = sum(df["recaudado"].sum() for df in datos_noches.values())
+        total_cupos = sum(df["Capacidad"].sum() for df in datos_noches.values())
+        total_vendidas = sum(df["Vendidas"].sum() for df in datos_noches.values())
+        total_disponibles = sum(df["Disponibles"].sum() for df in datos_noches.values())
+        total_recaudado = sum(df["Recaudado"].sum() for df in datos_noches.values())
         pct_global = round((total_vendidas / total_cupos) * 100, 2) if total_cupos > 0 else 0
 
         c_col1, c_col2, c_col3, c_col4 = st.columns(4)
@@ -140,10 +201,10 @@ with pestañas[0]:
         
         filas_resumen = []
         for n, df in datos_noches.items():
-            cup = int(df["cupos"].sum())
-            ven = int(df["entradas_vendidas"].sum())
-            disp = int(df["cupos_disponibles"].sum())
-            rec = float(df["recaudado"].sum())
+            cup = int(df["Capacidad"].sum())
+            ven = int(df["Vendidas"].sum())
+            disp = int(df["Disponibles"].sum())
+            rec = float(df["Recaudado"].sum())
             p = round((ven / cup) * 100, 2) if cup > 0 else 0
             filas_resumen.append({
                 "Noche": n,
@@ -155,17 +216,16 @@ with pestañas[0]:
             })
         st.dataframe(pd.DataFrame(filas_resumen), use_container_width=True, hide_index=True)
     else:
-        st.info("Esperando respuesta de la ticketera. Si los links son muy recientes, se activarán en breve.")
+        st.info("No se pudieron cargar datos consolidados.")
 
-# Pestañas individuales para cada noche
 for i, (nombre, ev_id) in enumerate(EVENTOS.items(), start=1):
     with pestañas[i]:
         if nombre in datos_noches:
             df = datos_noches[nombre]
-            c_cupos = int(df["cupos"].sum())
-            c_vendidas = int(df["entradas_vendidas"].sum())
-            c_disp = int(df["cupos_disponibles"].sum())
-            c_rec = float(df["recaudado"].sum())
+            c_cupos = int(df["Capacidad"].sum())
+            c_vendidas = int(df["Vendidas"].sum())
+            c_disp = int(df["Disponibles"].sum())
+            c_rec = float(df["Recaudado"].sum())
             c_pct = round((c_vendidas / c_cupos) * 100, 2) if c_cupos > 0 else 0
 
             col1, col2, col3, col4 = st.columns(4)
@@ -177,8 +237,7 @@ for i, (nombre, ev_id) in enumerate(EVENTOS.items(), start=1):
             st.markdown("---")
             st.subheader("Desglose por Sector")
             
-            df_mostrar = df[["nombre", "cupos", "entradas_vendidas", "cupos_disponibles", "precio_unitario", "recaudado"]].copy()
-            df_mostrar.columns = ["Sector", "Capacidad", "Vendidas", "Disponibles", "Precio Unitario", "Recaudado"]
+            df_mostrar = df.copy()
             df_mostrar["Precio Unitario"] = df_mostrar["Precio Unitario"].apply(lambda p: f"${p:,.0f}".replace(",", "."))
             df_mostrar["Recaudado"] = df_mostrar["Recaudado"].apply(lambda r: f"${r:,.0f}".replace(",", "."))
             
