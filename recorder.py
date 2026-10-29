@@ -1,13 +1,25 @@
 import os
-import json
 import requests
 import pandas as pd
-from datetime import datetime, timezone, timedelta
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import streamlit as st
 
-# Zona horaria GMT-3 (Argentina)
-TZ_ARG = timezone(timedelta(hours=-3))
+st.set_page_config(
+    page_title="Monitor Ventas - Carnaval Paso de los Libres",
+    page_icon="🎭",
+    layout="wide"
+)
+
+# Estética visual
+st.markdown("""
+<style>
+    .stApp { background-color: #160a2c; color: #f8f9fa; }
+    div[data-testid="stMetric"] { background-color: #241147; border: 1px solid #4a2182; border-radius: 10px; padding: 12px; }
+    h1, h2, h3 { color: #ffb703; font-weight: 700; }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] { background-color: #241147; border-radius: 8px 8px 0 0; color: #ced4da; padding: 8px 16px; }
+    .stTabs [aria-selected="true"] { background-color: #e63946 !important; color: white !important; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
 
 EVENTOS = {
     "Noche 1 (16 Ene)": "6ae205cb8562ca9d7bfe35af",
@@ -59,130 +71,117 @@ def asignar_precio(nombre):
             return p
     return 0
 
-def deducir_sector(codigo):
-    c = str(codigo).upper()
-    if c.startswith("SA-"): return "Sillas A"
-    if c.startswith("PV1-"): return "Palco Vip 1"
-    if c.startswith("PV2-") or c.startswith("PV-"): return "Palco Vip 2"
-    if c.startswith("CA-"): return "Camarote A"
-    if c.startswith("CB-"): return "Camarote B"
-    if c.startswith("CC-"): return "Camarote C"
-    if c.startswith("SV-"): return "Sillas Vip"
-    if c.startswith("SBF1-"): return "Sillas B fila 1"
-    if c.startswith("SBF2-"): return "Sillas B fila 2"
-    if c.startswith("SCF1-"): return "Sillas C fila 1"
-    if c.startswith("SCF2-"): return "Sillas C fila 2"
-    if c.startswith("SDF1-"): return "Sillas D fila 1"
-    if c.startswith("SDF2-"): return "Sillas D fila 2"
-    return "Otros"
-
-def cargar_diccionario_asientos():
-    if os.path.exists("mapa_asientos.json"):
-        with open("mapa_asientos.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return {item["order"]: item["codigo"] for item in data}
-    return {}
-
-def ejecutar_registro():
-    creds_json = os.environ.get("GCP_SERVICE_ACCOUNT")
-    if not creds_json:
-        print("Falta la variable GCP_SERVICE_ACCOUNT")
-        return
-
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds_dict = json.loads(creds_json)
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
+def obtener_datos(event_input):
+    if not event_input:
+        return None
+    clean_id = event_input.rstrip("/").split("/")[-1] if "/" in event_input else event_input.strip()
+    url = f"https://api.almotick.com/api/v1/events/{clean_id}/availability"
     
-    libro = client.open("Logs_Ventas_Carnaval")
-    sheet_totales = libro.sheet1
-    
-    # Comprobar o crear pestaña Log_Butacas
     try:
-        sheet_butacas = libro.worksheet("Log_Butacas")
-    except:
-        sheet_butacas = libro.add_worksheet(title="Log_Butacas", rows=1000, cols=10)
-        sheet_butacas.append_row(["fecha_hora_gmt3", "noche", "codigo_butaca", "sector", "precio", "order_id"])
-
-    # Leer butacas ya registradas
-    registros_previos = sheet_butacas.get_all_values()
-    claves_ya_registradas = set()
-    if len(registros_previos) > 1:
-        for fila in registros_previos[1:]:
-            if len(fila) >= 6:
-                claves_ya_registradas.add((fila[1], str(fila[5])))
-
-    dicc_mapa = cargar_diccionario_asientos()
-    ahora_gmt3 = datetime.now(TZ_ARG).strftime("%Y-%m-%d %H:%M:%S")
-
-    filas_totales = []
-    filas_nuevas_butacas = []
-
-    for noche, event_id in EVENTOS.items():
-        if not event_id:
-            continue
-        clean_id = event_id.rstrip("/").split("/")[-1] if "/" in event_id else event_id.strip()
-        url = f"https://api.almotick.com/api/v1/events/{clean_id}/availability"
-        
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=12)
-            if r.status_code == 200:
-                data = r.json()
+        r = requests.get(url, headers=HEADERS, timeout=12)
+        if r.status_code == 200:
+            data = r.json()
+            lots = data.get("lots", [])
+            if lots:
+                df = pd.DataFrame(lots)
                 
-                # 1. Totales generales por sector
-                df_lots = pd.DataFrame(data.get("lots", []))
-                if not df_lots.empty:
-                    if "cupos" not in df_lots.columns:
-                        df_lots["cupos"] = 0
-                    if "entradas_vendidas" not in df_lots.columns:
-                        df_lots["entradas_vendidas"] = 0
-                    if "cupos_disponibles" not in df_lots.columns:
-                        df_lots["cupos_disponibles"] = df_lots["cupos"] - df_lots["entradas_vendidas"]
+                # Columnas aseguradas contra eventos recién creados sin ventas
+                if "cupos" not in df.columns:
+                    df["cupos"] = 0
+                if "entradas_vendidas" not in df.columns:
+                    df["entradas_vendidas"] = 0
+                if "cupos_disponibles" not in df.columns:
+                    df["cupos_disponibles"] = df["cupos"] - df["entradas_vendidas"]
 
-                    df_lots["cupos"] = df_lots["cupos"].fillna(0).astype(int)
-                    df_lots["entradas_vendidas"] = df_lots["entradas_vendidas"].fillna(0).astype(int)
-                    df_lots["cupos_disponibles"] = df_lots["cupos_disponibles"].fillna(df_lots["cupos"]).astype(int)
+                df["cupos"] = df["cupos"].fillna(0).astype(int)
+                df["entradas_vendidas"] = df["entradas_vendidas"].fillna(0).astype(int)
+                df["cupos_disponibles"] = df["cupos_disponibles"].fillna(df["cupos"]).astype(int)
 
-                    df_lots["precio_unitario"] = df_lots["nombre"].apply(asignar_precio)
-                    df_lots["recaudado"] = df_lots["entradas_vendidas"] * df_lots["precio_unitario"]
+                df["precio_unitario"] = df["nombre"].apply(asignar_precio)
+                df["recaudado"] = df["entradas_vendidas"] * df["precio_unitario"]
+                return df
+    except Exception as e:
+        st.sidebar.error(f"Error consultando {clean_id}: {e}")
+    return None
 
-                    cupos = int(df_lots["cupos"].sum())
-                    vendidas = int(df_lots["entradas_vendidas"].sum())
-                    disp = int(df_lots["cupos_disponibles"].sum())
-                    rec = float(df_lots["recaudado"].sum())
-                    pct = round((vendidas / cupos) * 100, 2) if cupos > 0 else 0
+# Control lateral
+st.sidebar.title("⚙️ CONTROL")
+if st.sidebar.button("🔄 ACTUALIZAR AHORA"):
+    st.rerun()
 
-                    filas_totales.append([
-                        ahora_gmt3, noche, cupos, vendidas, disp, rec, pct
-                    ])
+st.title("🎭 CARNAVAL PASO DE LOS LIBRES")
+st.subheader("Centro de Monitoreo de Ventas y Recaudación")
 
-                # 2. Detalle de butacas vendidas
-                seats_api = data.get("seats", [])
-                for s in seats_api:
-                    if s.get("status") == "sold":
-                        order_id = str(s.get("order"))
-                        if (noche, order_id) not in claves_ya_registradas:
-                            cod = dicc_mapa.get(s.get("order"), f"ID-{order_id}")
-                            sec = deducir_sector(cod)
-                            precio = asignar_precio(sec)
-                            
-                            filas_nuevas_butacas.append([
-                                ahora_gmt3, noche, cod, sec, precio, order_id
-                            ])
-                            claves_ya_registradas.add((noche, order_id))
-        except Exception as e:
-            print(f"Error procesando {noche}: {e}")
+datos_noches = {}
+for nombre, ev_id in EVENTOS.items():
+    df_noche = obtener_datos(ev_id)
+    if df_noche is not None and not df_noche.empty:
+        datos_noches[nombre] = df_noche
 
-    # Guardar en Google Sheets
-    if filas_totales:
-        sheet_totales.append_rows(filas_totales)
-        print(f"Totales guardados: {len(filas_totales)} filas.")
+pestañas = st.tabs(["🌐 Total Consolidado (4 Noches)"] + list(EVENTOS.keys()))
 
-    if filas_nuevas_butacas:
-        sheet_butacas.append_rows(filas_nuevas_butacas)
-        print(f"Nuevas butacas registradas: {len(filas_nuevas_butacas)} filas.")
+# Pestaña 1: Consolidado Global
+with pestañas[0]:
+    if datos_noches:
+        total_cupos = sum(df["cupos"].sum() for df in datos_noches.values())
+        total_vendidas = sum(df["entradas_vendidas"].sum() for df in datos_noches.values())
+        total_disponibles = sum(df["cupos_disponibles"].sum() for df in datos_noches.values())
+        total_recaudado = sum(df["recaudado"].sum() for df in datos_noches.values())
+        pct_global = round((total_vendidas / total_cupos) * 100, 2) if total_cupos > 0 else 0
+
+        c_col1, c_col2, c_col3, c_col4 = st.columns(4)
+        c_col1.metric("Cupos Totales (4 Noches)", f"{total_cupos:,}".replace(",", "."))
+        c_col2.metric("Entradas Vendidas", f"{total_vendidas:,}".replace(",", "."), f"{pct_global}%")
+        c_col3.metric("Entradas Disponibles", f"{total_disponibles:,}".replace(",", "."))
+        c_col4.metric("Recaudación Total Estimada", f"${total_recaudado:,.0f}".replace(",", "."))
+
+        st.markdown("---")
+        st.subheader("📊 Resumen General por Noche")
+        
+        filas_resumen = []
+        for n, df in datos_noches.items():
+            cup = int(df["cupos"].sum())
+            ven = int(df["entradas_vendidas"].sum())
+            disp = int(df["cupos_disponibles"].sum())
+            rec = float(df["recaudado"].sum())
+            p = round((ven / cup) * 100, 2) if cup > 0 else 0
+            filas_resumen.append({
+                "Noche": n,
+                "Cupos": cup,
+                "Vendidas": ven,
+                "Disponibles": disp,
+                "Ocupación": f"{p}%",
+                "Recaudación": f"${rec:,.0f}".replace(",", ".")
+            })
+        st.dataframe(pd.DataFrame(filas_resumen), use_container_width=True, hide_index=True)
     else:
-        print("No hubo butacas nuevas vendidas en esta hora.")
+        st.info("Esperando respuesta de la ticketera. Si los links son muy recientes, se activarán en breve.")
 
-if __name__ == "__main__":
-    ejecutar_registro()
+# Pestañas individuales para cada noche
+for i, (nombre, ev_id) in enumerate(EVENTOS.items(), start=1):
+    with pestañas[i]:
+        if nombre in datos_noches:
+            df = datos_noches[nombre]
+            c_cupos = int(df["cupos"].sum())
+            c_vendidas = int(df["entradas_vendidas"].sum())
+            c_disp = int(df["cupos_disponibles"].sum())
+            c_rec = float(df["recaudado"].sum())
+            c_pct = round((c_vendidas / c_cupos) * 100, 2) if c_cupos > 0 else 0
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Capacidad Total", f"{c_cupos:,}".replace(",", "."))
+            col1.metric("Entradas Disponibles", f"{c_disp:,}".replace(",", "."))
+            col2.metric("Entradas Vendidas", f"{c_vendidas:,}".replace(",", "."), f"{c_pct}%")
+            col4.metric("Recaudación Noche", f"${c_rec:,.0f}".replace(",", "."))
+
+            st.markdown("---")
+            st.subheader("Desglose por Sector")
+            
+            df_mostrar = df[["nombre", "cupos", "entradas_vendidas", "cupos_disponibles", "precio_unitario", "recaudado"]].copy()
+            df_mostrar.columns = ["Sector", "Capacidad", "Vendidas", "Disponibles", "Precio Unitario", "Recaudado"]
+            df_mostrar["Precio Unitario"] = df_mostrar["Precio Unitario"].apply(lambda p: f"${p:,.0f}".replace(",", "."))
+            df_mostrar["Recaudado"] = df_mostrar["Recaudado"].apply(lambda r: f"${r:,.0f}".replace(",", "."))
+            
+            st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+        else:
+            st.warning(f"No se recibieron datos para {nombre}.")
