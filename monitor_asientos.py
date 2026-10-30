@@ -52,9 +52,9 @@ def asignar_precio(sector_nombre):
         if c in norm or norm in c: return p
     return 0
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def cargar_mapa_oficial(event_id):
-    """Descarga el plano oficial directamente desde Almotick con los order_id exactos"""
+    """Descarga el plano oficial con flags de habilitación y order_id exactos"""
     url = f"https://api.almotick.com/api/v1/events/{event_id}"
     try:
         r = requests.get(url, headers=HEADERS, timeout=15)
@@ -62,14 +62,14 @@ def cargar_mapa_oficial(event_id):
             seats = r.json().get("evento", {}).get("seatmap", {}).get("seats", [])
             filas = []
             for s in seats:
-                # Omitir tribunas generales del plano individual
                 if "tribuna" in s.get("tier_name", "").lower():
                     continue
                 filas.append({
                     "order": s.get("order"),
                     "codigo": s.get("label"),
                     "Sector": s.get("tier_name"),
-                    "Precio": asignar_precio(s.get("tier_name"))
+                    "Precio": asignar_precio(s.get("tier_name")),
+                    "enabled": s.get("enabled", True)
                 })
             return pd.DataFrame(filas)
     except Exception as e:
@@ -101,26 +101,33 @@ else:
             data = r.json()
             seats_api = data.get("seats", [])
             
-            # Mapear estados ocupados
-            estados_ocupados = {}
+            vendidos_api = set()
             for s in seats_api:
                 if s.get("status") in ["sold", "partial"]:
-                    estados_ocupados[s.get("order")] = "VENDIDO" if s.get("status") == "sold" else "PARCIAL"
+                    vendidos_api.add(s.get("order"))
 
             df_actual = df_base.copy()
-            df_actual["Estado"] = df_actual["order"].map(lambda o: estados_ocupados.get(o, "LIBRE"))
+            
+            def calcular_estado(fila):
+                if fila["order"] in vendidos_api:
+                    return "VENDIDO"
+                if not fila["enabled"]:
+                    return "BLOQUEADO / OCUPADO"
+                return "LIBRE"
+
+            df_actual["Estado"] = df_actual.apply(calcular_estado, axis=1)
             
             # Métricas
             totales = len(df_actual)
-            vendidos = len(df_actual[df_actual["Estado"] == "VENDIDO"])
+            ocupados = len(df_actual[df_actual["Estado"].isin(["VENDIDO", "BLOQUEADO / OCUPADO"])])
             libres = len(df_actual[df_actual["Estado"] == "LIBRE"])
-            recaudado = df_actual[df_actual["Estado"] == "VENDIDO"]["Precio"].sum()
+            recaudado = df_actual[df_actual["Estado"].isin(["VENDIDO", "BLOQUEADO / OCUPADO"])]["Precio"].sum()
             
             col_m1, col_m2, col_m3, col_m4 = st.columns(4)
             col_m1.metric("Capacidad Numerada", f"{totales:,}".replace(",", "."))
             col_m2.metric("Butacas/Módulos Libres", f"{libres:,}".replace(",", "."))
-            col_m3.metric("Butacas/Módulos Vendidos", f"{vendidos:,}".replace(",", "."))
-            col_m4.metric("Recaudación Butacas", f"${recaudado:,.0f}".replace(",", "."))
+            col_m3.metric("Ocupados / Vendidos", f"{ocupados:,}".replace(",", "."))
+            col_m4.metric("Recaudación / Valor Ocupado", f"${recaudado:,.0f}".replace(",", "."))
             
             st.markdown("---")
             
@@ -130,16 +137,21 @@ else:
                 lista_sectores = ["Todos"] + sorted(list(df_actual["Sector"].dropna().unique()))
                 sec_elegido = st.selectbox("Filtrar por Sector:", lista_sectores)
             with f_est:
-                filtro_estado = st.selectbox("Ver Estado:", ["Todos", "LIBRE", "VENDIDO"])
+                filtro_estado = st.selectbox("Ver Estado:", ["Todos", "LIBRE", "OCUPADOS (Vendidos y Bloqueados)", "VENDIDO", "BLOQUEADO / OCUPADO"])
             with f_bus:
-                busqueda = st.text_input("Buscar código puntual (ej: SDF1-055, CA-004):", "").strip().upper()
+                busqueda = st.text_input("Buscar código puntual (ej: PV2-001, SDF1-055):", "").strip().upper()
             
             # Aplicar filtros
             df_vista = df_actual.copy()
             if sec_elegido != "Todos":
                 df_vista = df_vista[df_vista["Sector"] == sec_elegido]
-            if filtro_estado != "Todos":
+            if filtro_estado == "LIBRE":
+                df_vista = df_vista[df_vista["Estado"] == "LIBRE"]
+            elif filtro_estado == "OCUPADOS (Vendidos y Bloqueados)":
+                df_vista = df_vista[df_vista["Estado"].isin(["VENDIDO", "BLOQUEADO / OCUPADO"])]
+            elif filtro_estado in ["VENDIDO", "BLOQUEADO / OCUPADO"]:
                 df_vista = df_vista[df_vista["Estado"] == filtro_estado]
+
             if busqueda:
                 df_vista = df_vista[df_vista["codigo"].str.contains(busqueda, na=False)]
                 
