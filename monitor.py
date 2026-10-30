@@ -1,5 +1,3 @@
-import os
-import json
 import requests
 import pandas as pd
 import streamlit as st
@@ -19,10 +17,6 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { gap: 8px; }
     .stTabs [data-baseweb="tab"] { background-color: #241147; border-radius: 8px 8px 0 0; color: #ced4da; padding: 8px 16px; }
     .stTabs [aria-selected="true"] { background-color: #e63946 !important; color: white !important; font-weight: bold; }
-    .status-badge { padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 0.85rem; }
-    .status-free { background-color: #2d6a4f; color: #d8f3dc; }
-    .status-partial { background-color: #d97706; color: #fef3c7; }
-    .status-sold { background-color: #b91c1c; color: #fee2e2; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -40,25 +34,11 @@ HEADERS = {
 }
 
 PRECIOS_SECTORES = {
-    "tribuna 1": 6000, 
-    "tribuna 2": 12000, 
-    "tribuna 3": 12000, 
-    "tribuna 4": 6000,
-    "sillas a": 15000, 
-    "sillas b fila 1": 24000, 
-    "sillas b fila 2": 19000,
-    "sillas c fila 1": 19000, 
-    "sillas c fila 2": 15000, 
-    "sillas d fila 1": 25000, 
-    "sillas d fila 2": 20000, 
-    "sillas vip": 32000, 
-    "camarote a": 400000,
-    "camarote b": 420000, 
-    "camarote c": 420000, 
-    "palco vip 1": 450000, 
-    "palco vip 2": 450000,
-    "seguro espectador menores": 4000,
-    "estacionamiento": 5000
+    "tribuna 1": 6000, "tribuna 2": 12000, "tribuna 3": 12000, "tribuna 4": 6000,
+    "sillas a": 15000, "sillas b fila 1": 24000, "sillas b fila 2": 19000,
+    "sillas c fila 1": 19000, "sillas c fila 2": 15000, "sillas d fila 1": 25000,
+    "sillas d fila 2": 20000, "sillas vip": 32000, "camarote a": 400000,
+    "camarote b": 420000, "camarote c": 420000, "palco vip 1": 450000, "palco vip 2": 450000
 }
 
 TRIBUNAS_INFO = {
@@ -69,8 +49,7 @@ TRIBUNAS_INFO = {
 }
 
 def normalizar_texto(t):
-    if not isinstance(t, str): 
-        return ""
+    if not isinstance(t, str): return ""
     t = t.lower().strip()
     for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u")):
         t = t.replace(a, b)
@@ -79,55 +58,46 @@ def normalizar_texto(t):
 def asignar_precio(nombre):
     norm = normalizar_texto(nombre)
     for c, p in PRECIOS_SECTORES.items():
-        if c in norm or norm in c: 
-            return p
+        if c in norm or norm in c: return p
     return 0
 
-def deducir_sector(codigo):
-    c = str(codigo).upper()
-    if c.startswith("SA-"): return "Sillas A"
-    if c.startswith("PV1-"): return "Palco Vip 1"
-    if c.startswith("PV2-") or c.startswith("PV-"): return "Palco Vip 2"
-    if c.startswith("CA-"): return "Camarote A"
-    if c.startswith("CB-"): return "Camarote B"
-    if c.startswith("CC-"): return "Camarote C"
-    if c.startswith("SV-"): return "Sillas Vip"
-    if c.startswith("SBF1-"): return "Sillas B fila 1"
-    if c.startswith("SBF2-"): return "Sillas B fila 2"
-    if c.startswith("SCF1-"): return "Sillas C fila 1"
-    if c.startswith("SCF2-"): return "Sillas C fila 2"
-    if c.startswith("SDF1-"): return "Sillas D fila 1"
-    if c.startswith("SDF2-"): return "Sillas D fila 2"
-    return "Otros"
-
-@st.cache_data
-def cargar_universo_base():
-    ruta = "mapa_asientos.json"
-    if os.path.exists(ruta):
-        with open(ruta, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        df = pd.DataFrame(data)
-        # Excluir los 4 registros de tribunas generales para mantener las 1.241 butacas físicas
-        df = df[~df["codigo"].str.contains("Tribuna", case=False, na=False)].copy()
-        df["sector"] = df["codigo"].apply(deducir_sector)
-        return df
+@st.cache_data(ttl=300)
+def cargar_mapa_base(event_id):
+    url = f"https://api.almotick.com/api/v1/events/{event_id}"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        if r.status_code == 200:
+            seats = r.json().get("evento", {}).get("seatmap", {}).get("seats", [])
+            filas = []
+            for s in seats:
+                if "tribuna" in s.get("tier_name", "").lower():
+                    continue
+                filas.append({
+                    "order": s.get("order"),
+                    "Sector": s.get("tier_name"),
+                    "Precio": asignar_precio(s.get("tier_name")),
+                    "enabled": s.get("enabled", True)
+                })
+            return pd.DataFrame(filas)
+    except Exception as e:
+        st.sidebar.error(f"Error cargando mapa {event_id}: {e}")
     return pd.DataFrame()
-
-df_base_asientos = cargar_universo_base()
 
 def procesar_noche(event_input):
     if not event_input:
         return None, None
     clean_id = event_input.rstrip("/").split("/")[-1] if "/" in event_input else event_input.strip()
-    url = f"https://api.almotick.com/api/v1/events/{clean_id}/availability"
-    
+    df_base = cargar_mapa_base(clean_id)
+    if df_base.empty:
+        return None, None
+        
+    url_avail = f"https://api.almotick.com/api/v1/events/{clean_id}/availability"
     try:
-        r = requests.get(url, headers=HEADERS, timeout=12)
+        r = requests.get(url_avail, headers=HEADERS, timeout=12)
         if r.status_code == 200:
             data = r.json()
             seats = data.get("seats", [])
             
-            # 1. Ventas individuales de asientos numerados
             vendidos_set = set()
             tribunas_status = {255: "free", 256: "free", 257: "free", 258: "free"}
             
@@ -136,32 +106,35 @@ def procesar_noche(event_input):
                 status = s.get("status")
                 if order_id in tribunas_status:
                     tribunas_status[order_id] = status
-                elif status == "sold":
+                elif status in ["sold", "partial"]:
                     vendidos_set.add(order_id)
             
-            # Tabla de sectores numerados
             filas_sector = []
-            if not df_base_asientos.empty:
-                for sector_nombre, grp in df_base_asientos.groupby("sector"):
-                    cupos = len(grp)
-                    orders_sector = set(grp["order"])
-                    vendidas = len(orders_sector.intersection(vendidos_set))
-                    disponibles = cupos - vendidas
-                    precio_unid = asignar_precio(sector_nombre)
-                    recaudado = vendidas * precio_unid
-                    
-                    filas_sector.append({
-                        "Sector": sector_nombre,
-                        "Capacidad": cupos,
-                        "Vendidas": vendidas,
-                        "Disponibles": disponibles,
-                        "Precio Unitario": precio_unid,
-                        "Recaudado": recaudado
-                    })
+            for sector_nombre, grp in df_base.groupby("Sector"):
+                cupos = len(grp)
+                orders_sector = set(grp["order"])
+                vendidas = len(orders_sector.intersection(vendidos_set))
+                
+                # Identificar bloqueos (enabled == False y no vendidos)
+                bloqueadas = len(grp[(grp["enabled"] == False) & (~grp["order"].isin(vendidos_set))])
+                disponibles = cupos - vendidas - bloqueadas
+                precio_unid = asignar_precio(sector_nombre)
+                
+                # Recaudación solo multiplica lo vendido efectivamente
+                recaudado = vendidas * precio_unid
+                
+                filas_sector.append({
+                    "Sector": sector_nombre,
+                    "Capacidad": cupos,
+                    "Vendidas": vendidas,
+                    "Reservas/Bloqueos": bloqueadas,
+                    "Disponibles": disponibles,
+                    "Precio Unitario": precio_unid,
+                    "Recaudado": recaudado
+                })
             
             df_sec = pd.DataFrame(filas_sector)
             
-            # Tabla de estado de tribunas
             filas_tribunas = []
             for order_id, info in TRIBUNAS_INFO.items():
                 st_val = tribunas_status.get(order_id, "free")
@@ -181,6 +154,7 @@ def procesar_noche(event_input):
 # Control lateral
 st.sidebar.title("⚙️ CONTROL")
 if st.sidebar.button("🔄 ACTUALIZAR AHORA"):
+    st.cache_data.clear()
     st.rerun()
 
 st.title("🎭 CARNAVAL PASO DE LOS LIBRES")
@@ -197,20 +171,21 @@ for nombre, ev_id in EVENTOS.items():
 
 pestañas = st.tabs(["🌐 Total Consolidado (4 Noches)"] + list(EVENTOS.keys()))
 
-# Pestaña 1: Consolidado Global
 with pestañas[0]:
     if datos_noches:
         total_cupos = sum(df["Capacidad"].sum() for df in datos_noches.values())
         total_vendidas = sum(df["Vendidas"].sum() for df in datos_noches.values())
+        total_bloqueos = sum(df["Reservas/Bloqueos"].sum() for df in datos_noches.values())
         total_disponibles = sum(df["Disponibles"].sum() for df in datos_noches.values())
         total_recaudado = sum(df["Recaudado"].sum() for df in datos_noches.values())
         pct_global = round((total_vendidas / total_cupos) * 100, 2) if total_cupos > 0 else 0
 
-        c_col1, c_col2, c_col3, c_col4 = st.columns(4)
-        c_col1.metric("Capacidad Numerada (4 Noches)", f"{total_cupos:,}".replace(",", "."))
-        c_col2.metric("Butacas/Módulos Vendidos", f"{total_vendidas:,}".replace(",", "."), f"{pct_global}%")
-        c_col3.metric("Butacas/Módulos Libres", f"{total_disponibles:,}".replace(",", "."))
-        c_col4.metric("Recaudación Numerada", f"${total_recaudado:,.0f}".replace(",", "."))
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Capacidad Total", f"{total_cupos:,}".replace(",", "."))
+        c2.metric("Butacas Vendidas", f"{total_vendidas:,}".replace(",", "."), f"{pct_global}%")
+        c3.metric("Reservas / Bloqueos", f"{total_bloqueos:,}".replace(",", "."))
+        c4.metric("Butacas Libres", f"{total_disponibles:,}".replace(",", "."))
+        c5.metric("Recaudación Efectiva", f"${total_recaudado:,.0f}".replace(",", "."))
 
         st.markdown("---")
         st.subheader("📊 Resumen General por Noche (Ubicaciones Numeradas)")
@@ -219,6 +194,7 @@ with pestañas[0]:
         for n, df in datos_noches.items():
             cup = int(df["Capacidad"].sum())
             ven = int(df["Vendidas"].sum())
+            bloq = int(df["Reservas/Bloqueos"].sum())
             disp = int(df["Disponibles"].sum())
             rec = float(df["Recaudado"].sum())
             p = round((ven / cup) * 100, 2) if cup > 0 else 0
@@ -226,15 +202,15 @@ with pestañas[0]:
                 "Noche": n,
                 "Capacidad": cup,
                 "Vendidas": ven,
+                "Reservas": bloq,
                 "Disponibles": disp,
-                "Ocupación": f"{p}%",
-                "Recaudación": f"${rec:,.0f}".replace(",", ".")
+                "Ocupación Vendida": f"{p}%",
+                "Recaudación Efectiva": f"${rec:,.0f}".replace(",", ".")
             })
         st.dataframe(pd.DataFrame(filas_resumen), use_container_width=True, hide_index=True)
     else:
         st.info("Esperando respuesta de la ticketera.")
 
-# Pestañas individuales para cada noche
 for i, (nombre, ev_id) in enumerate(EVENTOS.items(), start=1):
     with pestañas[i]:
         if nombre in datos_noches:
@@ -243,18 +219,19 @@ for i, (nombre, ev_id) in enumerate(EVENTOS.items(), start=1):
             
             c_cupos = int(df["Capacidad"].sum())
             c_vendidas = int(df["Vendidas"].sum())
+            c_bloq = int(df["Reservas/Bloqueos"].sum())
             c_disp = int(df["Disponibles"].sum())
             c_rec = float(df["Recaudado"].sum())
             c_pct = round((c_vendidas / c_cupos) * 100, 2) if c_cupos > 0 else 0
 
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Capacidad Numerada", f"{c_cupos:,}".replace(",", "."))
-            col1.metric("Butacas/Módulos Libres", f"{c_disp:,}".replace(",", "."))
-            col2.metric("Butacas/Módulos Vendidos", f"{c_vendidas:,}".replace(",", "."), f"{c_pct}%")
-            col4.metric("Recaudación Numerada", f"${c_rec:,.0f}".replace(",", "."))
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("Capacidad", f"{c_cupos:,}".replace(",", "."))
+            col2.metric("Vendidas", f"{c_vendidas:,}".replace(",", "."), f"{c_pct}%")
+            col3.metric("Reservas", f"{c_bloq:,}".replace(",", "."))
+            col4.metric("Libres", f"{c_disp:,}".replace(",", "."))
+            col5.metric("Recaudación", f"${c_rec:,.0f}".replace(",", "."))
 
             st.markdown("---")
-            
             c_izq, c_der = st.columns([3, 2])
             
             with c_izq:
@@ -267,12 +244,11 @@ for i, (nombre, ev_id) in enumerate(EVENTOS.items(), start=1):
             with c_der:
                 st.subheader("Estado de Tribunas Generales")
                 st.dataframe(df_tr, use_container_width=True, hide_index=True)
-                
                 st.markdown("---")
                 st.subheader("Tarifas de Adicionales")
                 st.markdown("""
-                * **Seguro Espectador Menores:** $4.000 *(Adicional por checkout)*
-                * **Estacionamiento:** $5.000 *(Adicional por checkout)*
+                * **Seguro Espectador Menores:** $4.000 *(Checkout)*
+                * **Estacionamiento:** $5.000 *(Checkout)*
                 """)
         else:
             st.warning(f"No se recibieron datos para {nombre}.")
