@@ -54,7 +54,6 @@ def asignar_precio(sector_nombre):
 
 @st.cache_data(ttl=300)
 def cargar_mapa_oficial(event_id):
-    """Descarga el plano oficial con flags de habilitación y order_id exactos"""
     url = f"https://api.almotick.com/api/v1/events/{event_id}"
     try:
         r = requests.get(url, headers=HEADERS, timeout=15)
@@ -112,22 +111,24 @@ else:
                 if fila["order"] in vendidos_api:
                     return "VENDIDO"
                 if not fila["enabled"]:
-                    return "BLOQUEADO / OCUPADO"
+                    return "RESERVADO / BLOQUEADO"
                 return "LIBRE"
 
             df_actual["Estado"] = df_actual.apply(calcular_estado, axis=1)
             
-            # Métricas
+            # Métricas: el dinero computa EXCLUSIVAMENTE sobre 'VENDIDO'
             totales = len(df_actual)
-            ocupados = len(df_actual[df_actual["Estado"].isin(["VENDIDO", "BLOQUEADO / OCUPADO"])])
+            vendidos = len(df_actual[df_actual["Estado"] == "VENDIDO"])
+            bloqueados = len(df_actual[df_actual["Estado"] == "RESERVADO / BLOQUEADO"])
             libres = len(df_actual[df_actual["Estado"] == "LIBRE"])
-            recaudado = df_actual[df_actual["Estado"].isin(["VENDIDO", "BLOQUEADO / OCUPADO"])]["Precio"].sum()
+            recaudado_efectivo = df_actual[df_actual["Estado"] == "VENDIDO"]["Precio"].sum()
             
-            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
             col_m1.metric("Capacidad Numerada", f"{totales:,}".replace(",", "."))
             col_m2.metric("Butacas/Módulos Libres", f"{libres:,}".replace(",", "."))
-            col_m3.metric("Ocupados / Vendidos", f"{ocupados:,}".replace(",", "."))
-            col_m4.metric("Recaudación / Valor Ocupado", f"${recaudado:,.0f}".replace(",", "."))
+            col_m3.metric("Butacas Vendidas", f"{vendidos:,}".replace(",", "."))
+            col_m4.metric("Reservas / Bloqueos", f"{bloqueados:,}".replace(",", "."))
+            col_m5.metric("Recaudación Efectiva", f"${recaudado_efectivo:,.0f}".replace(",", "."))
             
             st.markdown("---")
             
@@ -137,7 +138,7 @@ else:
                 lista_sectores = ["Todos"] + sorted(list(df_actual["Sector"].dropna().unique()))
                 sec_elegido = st.selectbox("Filtrar por Sector:", lista_sectores)
             with f_est:
-                filtro_estado = st.selectbox("Ver Estado:", ["Todos", "LIBRE", "OCUPADOS (Vendidos y Bloqueados)", "VENDIDO", "BLOQUEADO / OCUPADO"])
+                filtro_estado = st.selectbox("Ver Estado:", ["Todos", "LIBRE", "VENDIDO", "RESERVADO / BLOQUEADO", "NO DISPONIBLES (Vendidos + Reservas)"])
             with f_bus:
                 busqueda = st.text_input("Buscar código puntual (ej: PV2-001, SDF1-055):", "").strip().upper()
             
@@ -147,10 +148,12 @@ else:
                 df_vista = df_vista[df_vista["Sector"] == sec_elegido]
             if filtro_estado == "LIBRE":
                 df_vista = df_vista[df_vista["Estado"] == "LIBRE"]
-            elif filtro_estado == "OCUPADOS (Vendidos y Bloqueados)":
-                df_vista = df_vista[df_vista["Estado"].isin(["VENDIDO", "BLOQUEADO / OCUPADO"])]
-            elif filtro_estado in ["VENDIDO", "BLOQUEADO / OCUPADO"]:
-                df_vista = df_vista[df_vista["Estado"] == filtro_estado]
+            elif filtro_estado == "VENDIDO":
+                df_vista = df_vista[df_vista["Estado"] == "VENDIDO"]
+            elif filtro_estado == "RESERVADO / BLOQUEADO":
+                df_vista = df_vista[df_vista["Estado"] == "RESERVADO / BLOQUEADO"]
+            elif filtro_estado == "NO DISPONIBLES (Vendidos + Reservas)":
+                df_vista = df_vista[df_vista["Estado"].isin(["VENDIDO", "RESERVADO / BLOQUEADO"])]
 
             if busqueda:
                 df_vista = df_vista[df_vista["codigo"].str.contains(busqueda, na=False)]
